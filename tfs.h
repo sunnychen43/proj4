@@ -6,7 +6,6 @@
  *
  */
 
-#include <linux/limits.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -44,7 +43,7 @@ typedef struct dirent_t {
 	uint16_t valid;					/* validity of the directory entry */
 	
 	char name[208];					/* name of the directory entry */
-	uint16_t len;					/* length of name */
+	uint16_t name_len;					/* length of name */
 
 	char _padding[42];
 } dirent_t;
@@ -53,7 +52,7 @@ typedef struct dirent_t {
 /*
  * bitmap operations
  */
-typedef unsigned char* bitmap_t;
+typedef unsigned char *bitmap_t;
 
 void set_bitmap(bitmap_t b, int i) {
     b[i / 8] |= 1 << (i & 7);
