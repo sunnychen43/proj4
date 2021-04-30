@@ -6,3 +6,4 @@ benchmark/
 *.o
 .zip
 .DS_store
+.vscode/
