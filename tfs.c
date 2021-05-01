@@ -22,6 +22,8 @@
 #include "block.h"
 #include "tfs.h"
 
+#define ROOT_INO 0
+
 char diskfile_path[PATH_MAX];
 
 // Declare your in-memory data structures here
@@ -64,7 +66,7 @@ int get_avail_ino() {
 		}
 	}
 
-	return 0;
+	return -1;
 }
 
 /* 
@@ -88,7 +90,7 @@ int get_avail_blkno() {
 		}
 	}
 
-	return 0;
+	return -1;
 }
 
 /* 
@@ -123,41 +125,42 @@ int writei(uint16_t ino, inode_t *inode) {
 /* 
  * directory operations
  */
+void dirent_init(dirent_t *dirent, uint16_t ino, char *name) {
+	dirent->valid = 1;
+	dirent->ino = ino;
+	strcpy(dirent->name, name);
+	dirent->name_len = strlen(name);
+}
+
 int dir_find(uint16_t ino, const char *fname, size_t name_len, dirent_t *dirent) {
 
-	inode_t inode;
 	readi(ino, &inode);
-
 	for (int i=0; i < 16; i++) {
-		if (inode.direct_ptr[i] == 0) {
+		if (inode.direct_ptr[i] == -1)
 			continue;
-		}
-
 		char block[BLOCK_SIZE];
 		bio_read(inode.direct_ptr[i], block);
 		dirent_t *dirent_blk = (dirent_t*)block;
 		for (int j=0; j < BLOCK_SIZE/sizeof(dirent_t); j++) {
-			if (dirent_blk[j].valid == 1) {
-				if (dirent_blk[j].name_len == name_len && strncmp(dirent_blk[j].name, fname, name_len) == 0) {
-					memcpy(dirent, dirent_blk+j, sizeof(dirent_t));
-					return 0;
-				}
+			if (dirent_blk[j].valid == 1 && strcmp(dirent_blk[j].name, fname) == 0) {
+				memcpy(dirent, dirent_blk+j, sizeof(dirent_t));
+				return 0;
 			}
 		}
 	}
 
-	return 1;
+	return -1;
 }
 
 int dir_add(inode_t *dir_inode, uint16_t f_ino, const char *fname, size_t name_len) {
 	if (dir_find(dir_inode->ino, fname, name_len, &dirent) == 0)
-		return 1;
+		return -1;
 
 	char block[BLOCK_SIZE];
 	int i, j;
 	for (i=0; i < 16; i++) {
 		j = 0;
-		if (dir_inode->direct_ptr[i] == 0) {  // if no data block allocate one
+		if (dir_inode->direct_ptr[i] == -1) {  // if no data block allocate one
 			dir_inode->direct_ptr[i] = get_avail_blkno();
 			memset(block, 0, BLOCK_SIZE);
 			bio_write(dir_inode->direct_ptr[i], block);
@@ -173,42 +176,34 @@ int dir_add(inode_t *dir_inode, uint16_t f_ino, const char *fname, size_t name_l
 
 	if (i < 16) {
 		dirent_t *dirent = (dirent_t*)block+j;
-		dirent->ino = f_ino;
-		dirent->valid = 1;
-		memcpy(dirent->name, fname, name_len+1);
-		dirent->name_len = name_len;
+		dirent_init(dirent, f_ino, fname);
 		bio_write(inode.direct_ptr[i], block);
 		return 0;
 	}
 	else {  // no space in blocks
-		return 1;
+		return -1;
 	}
 }
 
 int dir_remove(inode_t *dir_inode, const char *fname, size_t name_len) {
 
 	char block[BLOCK_SIZE];
-
 	for (int i=0; i < 16; i++) {
 		// if no data block allocate one
-		if (dir_inode->direct_ptr[i] == 0) {
+		if (dir_inode->direct_ptr[i] == -1)
 			continue;
-		}
-
-		bio_read(inode.direct_ptr[i], block);
+		bio_read(dir_inode->direct_ptr[i], block);
 		dirent_t *dirent_blk = (dirent_t*)block;
 		for (int j=0; j < BLOCK_SIZE/sizeof(dirent_t); j++) {
-			if (dirent_blk[j].valid == 1) {
-				if (dirent_blk[j].name_len == name_len && strncmp(dirent_blk[j].name, fname, name_len) == 0) {
-					dirent_blk[j].valid = 0;
-					bio_write(dir_inode->direct_ptr[i], block);
-					return 0;
-				}
+			if (dirent_blk[j].valid == 1 && strcmp(dirent_blk[j].name, fname) == 0) {
+				dirent_blk[j].valid = 0;
+				bio_write(dir_inode->direct_ptr[i], block);
+				return 0;
 			}
 		}
 	}
 
-	return 1;
+	return -1;
 }
 
 /* 
@@ -251,7 +246,7 @@ void inode_init(inode_t *inode, uint16_t ino, uint32_t type) {
 	inode->size = 0;
 	inode->link = (type == 0) ? 2 : 1;
 	for (int i=0; i < 16; i++) {
-		inode->direct_ptr[i] = 0;
+		inode->direct_ptr[i] = -1;
 	}
 }
 
@@ -275,26 +270,14 @@ int tfs_mkfs() {
 	memcpy(block, &superblock, sizeof(superblock_t));
 	bio_write(0, block);
 
+	// clear bitmaps
 	memset(block, 0, BLOCK_SIZE);
-	set_bitmap(block, 0);  // reserve first bit
 	bio_write(superblock.i_bitmap_blk, block);
-	bio_write(superblock.i_bitmap_blk, block);
+	bio_write(superblock.d_bitmap_blk, block);
 
-	inode_init(&inode, 1, 0);
-	inode.link = 1;
+	// write root inode
+	inode_init(&inode, 0, 0);
 	writei(inode.ino, &inode);
-
-	// Call dev_init() to initialize (Create) Diskfile
-
-	// write superblock information
-
-	// initialize inode bitmap
-
-	// initialize data block bitmap
-
-	// update bitmap information for root directory
-
-	// update inode for root directory
 
 	return 0;
 }
@@ -339,12 +322,12 @@ static int tfs_getattr(const char *path, struct stat *stbuf) {
 }
 
 static int tfs_opendir(const char *path, struct fuse_file_info *fi) {
-    return get_node_by_path(path, 1, &inode) == 0 && inode.type == 0;
+    return get_node_by_path(path, ROOT_INO, &inode) == 0 && inode.type == 0;
 }
 
 static int tfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
 
-	get_node_by_path(path, 1, &inode);
+	get_node_by_path(path, ROOT_INO, &inode);
 	for (int i=0; i < 16; i++) {
 		if (inode.direct_ptr[i] == 0)
 			break;
@@ -373,7 +356,7 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 	char parent[200], target[50];
 	parse_name(path, parent, target);
 
-	get_node_by_path(parent, 1, &inode);
+	get_node_by_path(parent, ROOT_INO, &inode);
 
 	int ino = get_avail_ino();
 	dir_add(&inode, ino, target, strlen(target));
@@ -403,7 +386,7 @@ static int tfs_rmdir(const char *path) {
 	char parent[200], target[50];
 	parse_name(path, parent, target);
 
-	get_node_by_path(path, 1, &inode);
+	get_node_by_path(path, ROOT_INO, &inode);
 	for (int i=0; i < 16; i++) {
 		if (inode.direct_ptr[i] != 0) {
 			clear_bmap_blkno(inode.direct_ptr[i]);
@@ -411,7 +394,7 @@ static int tfs_rmdir(const char *path) {
 	}
 	clear_bmap_ino(inode.ino);
 
-	get_node_by_path(parent, 1, &inode);
+	get_node_by_path(parent, ROOT_INO, &inode);
 	dir_remove(&inode, target, strlen(target));
 
 	// Step 1: Use dirname() and basename() to separate parent directory path and target directory name
