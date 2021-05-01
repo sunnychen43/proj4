@@ -125,13 +125,14 @@ int writei(uint16_t ino, inode_t *inode) {
 /* 
  * directory operations
  */
-void dirent_init(dirent_t *dirent, uint16_t ino, char *name) {
+void dirent_init(dirent_t *dirent, uint16_t ino, const char *name) {
 	dirent->valid = 1;
 	dirent->ino = ino;
 	strcpy(dirent->name, name);
 	dirent->name_len = strlen(name);
 }
 
+// NAME IS NOT NULL TERMINATED
 int dir_find(uint16_t ino, const char *fname, size_t name_len, dirent_t *dirent) {
 
 	readi(ino, &inode);
@@ -142,9 +143,11 @@ int dir_find(uint16_t ino, const char *fname, size_t name_len, dirent_t *dirent)
 		bio_read(inode.direct_ptr[i], block);
 		dirent_t *dirent_blk = (dirent_t*)block;
 		for (int j=0; j < BLOCK_SIZE/sizeof(dirent_t); j++) {
-			if (dirent_blk[j].valid == 1 && strcmp(dirent_blk[j].name, fname) == 0) {
-				memcpy(dirent, dirent_blk+j, sizeof(dirent_t));
-				return 0;
+			if (dirent_blk[j].valid == 1) {
+				if (dirent_blk[j].name_len == name_len && strncmp(dirent_blk[j].name, fname, name_len) == 0) {
+					memcpy(dirent, dirent_blk+j, sizeof(dirent_t));
+					return 0;
+				}
 			}
 		}
 	}
@@ -195,10 +198,12 @@ int dir_remove(inode_t *dir_inode, const char *fname, size_t name_len) {
 		bio_read(dir_inode->direct_ptr[i], block);
 		dirent_t *dirent_blk = (dirent_t*)block;
 		for (int j=0; j < BLOCK_SIZE/sizeof(dirent_t); j++) {
-			if (dirent_blk[j].valid == 1 && strcmp(dirent_blk[j].name, fname) == 0) {
-				dirent_blk[j].valid = 0;
-				bio_write(dir_inode->direct_ptr[i], block);
-				return 0;
+			if (dirent_blk[j].valid == 1) {
+				if (dirent_blk[j].name_len == name_len && strncmp(dirent_blk[j].name, fname, name_len) == 0) {
+					dirent_blk[j].valid = 0;
+					bio_write(dir_inode->direct_ptr[i], block);
+					return 0;
+				}
 			}
 		}
 	}
@@ -215,27 +220,24 @@ int get_node_by_path(const char *path, uint16_t ino, inode_t *inode) {
 		return 0;
 	}
 	
-	int len;
+	if (*path == '/')
+		path++;
+
 	char *ptr = strchr(path, '/');
-	if (ptr == NULL) {
-		len = strlen(ptr);
-	}
-	else {
-		len = ptr-path;
-	}
+	int len = (ptr == NULL) ? strlen(path) : ptr-path;
 
 	dirent_t dirent;
 	if (dir_find(ino, path, len, &dirent) == 0) {
-		if (*(ptr+1) == 0) {  // end of path
+		if (ptr == NULL) {  // end of path
 			readi(dirent.ino, inode);
 			return 0;
 		}
 		else {
-			return get_node_by_path(ptr+1, dirent.ino, inode);
+			return get_node_by_path(ptr, dirent.ino, inode);
 		}
 	}
 
-	return 1;  // not found
+	return -1;  // not found
 }
 
 void inode_init(inode_t *inode, uint16_t ino, uint32_t type) {
@@ -276,7 +278,7 @@ int tfs_mkfs() {
 	bio_write(superblock.d_bitmap_blk, block);
 
 	// write root inode
-	inode_init(&inode, 0, 0);
+	inode_init(&inode, get_avail_ino(), 0);
 	writei(inode.ino, &inode);
 
 	return 0;
@@ -287,7 +289,7 @@ int tfs_mkfs() {
  * FUSE file operations
  */
 static void *tfs_init(struct fuse_conn_info *conn) {
-
+	printf("tfs init\n");
 	if (access(diskfile_path, F_OK) == 0) {
 		dev_open(diskfile_path);
 		char block[BLOCK_SIZE];
@@ -306,26 +308,31 @@ static void tfs_destroy(void *userdata) {
 }
 
 static int tfs_getattr(const char *path, struct stat *stbuf) {
-	printf("%s\n", path);
+	if (get_node_by_path(path, ROOT_INO, &inode) == -1) {
+		printf("get attr error\n");
+		return -ENOENT;
+	}
 
+	memset(stbuf, 0, sizeof(*stbuf));
 
-
-	// Step 1: call get_node_by_path() to get inode from path
-
-	// Step 2: fill attribute of file into stbuf from inode
-
-		stbuf->st_mode   = S_IFDIR | 0755;
-		stbuf->st_nlink  = 2;
-		time(&stbuf->st_mtime);
+	stbuf->st_ino = inode.ino;
+	stbuf->st_mode = (inode.type == 0 ? S_IFDIR : S_IFREG) | 0755;
+	stbuf->st_nlink = inode.link;
+	stbuf->st_uid = getuid();
+	stbuf->st_gid = getgid();
+	time(&stbuf->st_mtime);
 
 	return 0;
 }
 
 static int tfs_opendir(const char *path, struct fuse_file_info *fi) {
+	printf("opendir: %s\n", path);
     return get_node_by_path(path, ROOT_INO, &inode) == 0 && inode.type == 0;
 }
 
 static int tfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
+
+	printf("readdir: %s\n", path);
 
 	get_node_by_path(path, ROOT_INO, &inode);
 	for (int i=0; i < 16; i++) {
@@ -346,13 +353,15 @@ static int tfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 
 
 void parse_name(const char *path, char *parent, char *target) {
-	char *p = strrchr(path, '/');
 	strcpy(parent, path);
-	parent[p-path] = 0;
+
+	char *p = strrchr(path, '/');
+	parent[(p == path) ? 1 : p-path] = 0;
 	strcpy(target, p+1);
 }
 
 static int tfs_mkdir(const char *path, mode_t mode) {
+
 	char parent[200], target[50];
 	parse_name(path, parent, target);
 
@@ -376,12 +385,11 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 	// Step 5: Update inode for target directory
 
 	// Step 6: Call writei() to write inode to disk
-	
-	printf("%s\n", path);
 	return 0;
 }
 
 static int tfs_rmdir(const char *path) {
+	printf("rmdir\n");
 
 	char parent[200], target[50];
 	parse_name(path, parent, target);
@@ -416,7 +424,6 @@ static int tfs_rmdir(const char *path) {
 static int tfs_releasedir(const char *path, struct fuse_file_info *fi) {
 	// For this project, you don't need to fill this function
 	// But DO NOT DELETE IT!
-	printf("%s\n", path);
     return 0;
 }
 
@@ -433,7 +440,7 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) 
 	// Step 5: Update inode for target file
 
 	// Step 6: Call writei() to write inode to disk
-	printf("%s\n", path);
+	printf("create %s\n", path);
 	return 0;
 }
 
@@ -442,7 +449,7 @@ static int tfs_open(const char *path, struct fuse_file_info *fi) {
 	// Step 1: Call get_node_by_path() to get inode from path
 
 	// Step 2: If not find, return -1
-	printf("%s\n", path);
+	printf("open %s\n", path);
 	return 0;
 }
 
@@ -455,7 +462,7 @@ static int tfs_read(const char *path, char *buffer, size_t size, off_t offset, s
 	// Step 3: copy the correct amount of data from offset to buffer
 
 	// Note: this function should return the amount of bytes you copied to buffer
-	printf("%s\n", path);
+	printf("read %s\n", path);
 	return 0;
 }
 
@@ -469,7 +476,7 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 	// Step 4: Update the inode info and write it to disk
 
 	// Note: this function should return the amount of bytes you write to disk
-	printf("%s\n", path);
+	printf("write %s\n", path);
 	return size;
 }
 
@@ -486,7 +493,7 @@ static int tfs_unlink(const char *path) {
 	// Step 5: Call get_node_by_path() to get inode of parent directory
 
 	// Step 6: Call dir_remove() to remove directory entry of target file in its parent directory
-	printf("%s\n", path);
+	printf("unlink %s\n", path);
 	return 0;
 }
 
@@ -540,29 +547,21 @@ static struct fuse_operations tfs_ope = {
 
 
 int main(int argc, char **argv) {
-	// strcpy(diskfile_path, "./DISKFILE");
-	// tfs_mkfs();
-	// printf("%d\n", superblock.d_start_blk);
-	// for (int i=0; i < 100; i++) {
-	// 	printf("%d\n", get_avail_blkno());
-	// }
+	strcpy(diskfile_path, "./DISKFILE");
+	tfs_mkfs();
+	tfs_mkdir("/a", 0755);
+	struct stat s;
+	tfs_getattr("/a", &s);
 
-	// printf("%d\n", tfs_opendir("/.", NULL));
+	// int fuse_stat;
 
-	// return 0;
+	// getcwd(diskfile_path, PATH_MAX);
+	// strcat(diskfile_path, "/DISKFILE");
 
-	int fuse_stat;
+	// fuse_stat = fuse_main(argc, argv, &tfs_ope, NULL);
 
-	getcwd(diskfile_path, PATH_MAX);
-	strcat(diskfile_path, "/DISKFILE");
+	// return fuse_stat;
 
-	fuse_stat = fuse_main(argc, argv, &tfs_ope, NULL);
-
-	return fuse_stat;
-
-	// char a[100], b[100];
-	// parse_name("/", a, b);
-	// printf("%s %s\n", a, b);
 	return 0;
 }
 
