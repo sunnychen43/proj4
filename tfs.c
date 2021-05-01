@@ -568,18 +568,18 @@ int main(int argc, char **argv) {
 
 	// return 0;
 
-	// int fuse_stat;
+	int fuse_stat;
 
-	// getcwd(diskfile_path, PATH_MAX);
-	// strcat(diskfile_path, "/DISKFILE");
+	getcwd(diskfile_path, PATH_MAX);
+	strcat(diskfile_path, "/DISKFILE");
 
-	// fuse_stat = fuse_main(argc, argv, &tfs_ope, NULL);
+	fuse_stat = fuse_main(argc, argv, &tfs_ope, NULL);
 
-	// return fuse_stat;
+	return fuse_stat;
 
-	char a[100], b[100];
-	parse_name("/", a, b);
-	printf("%s %s\n", a, b);
+	// char a[100], b[100];
+	// parse_name("/", a, b);
+	// printf("%s %s\n", a, b);
 	return 0;
 }
 
