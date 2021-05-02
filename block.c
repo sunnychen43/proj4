@@ -66,12 +66,22 @@ int bio_read(const int block_num, void *buf) {
 		if (retstat < 0)
 			perror("block_read failed");
     }
+    // printf("read: %d\n", block_num);
+    // for (int i=0; i < 100; i++) {
+    //     printf("%d", ((char*)buf)[i]);
+    // }
+    // printf("\n");
 
     return retstat;
 }
 
 //Write a block to the disk
 int bio_write(const int block_num, const void *buf) {
+    // printf("write: %d\n", block_num);
+    // for (int i=0; i < 100; i++) {
+    //     printf("%d", ((char*)buf)[i]);
+    // }
+    // printf("\n");
     int retstat = 0;
     retstat = pwrite(diskfile, buf, BLOCK_SIZE, block_num*BLOCK_SIZE);
     if (retstat < 0) {
