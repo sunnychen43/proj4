@@ -23,6 +23,8 @@
 #include "block.h"
 #include "tfs.h"
 
+#define MAX(x, y) (((x) > (y)) ? (x) : (y))
+#define MIN(x, y) (((x) < (y)) ? (x) : (y))
 #define ROOT_INO 0
 
 char diskfile_path[PATH_MAX];
@@ -350,6 +352,7 @@ static int tfs_getattr(const char *path, struct stat *stbuf) {
 	stbuf->st_ino = inode.ino;
 	stbuf->st_mode = (inode.type == 0 ? S_IFDIR : S_IFREG) | 0755;
 	stbuf->st_nlink = inode.link;
+	stbuf->st_size = inode.size;
 	stbuf->st_uid = getuid();
 	stbuf->st_gid = getgid();
 	time(&stbuf->st_mtime);
@@ -558,6 +561,7 @@ int alloc_d_blk(inode_t *dir_inode, int i) {
 	bio_write(d_blk_num, block);
 
 	dir_inode->direct_ptr[i] = d_blk_num;
+	dir_inode->size += BLOCK_SIZE;
 	writei(dir_inode->ino, dir_inode);
 	return 0;
 }
@@ -565,8 +569,15 @@ int alloc_d_blk(inode_t *dir_inode, int i) {
 static int tfs_write(const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *fi) {
 	
 	inode_t inode;
-	if (get_node_by_path(path, ROOT_INO, &inode) == -1)
+	if (get_node_by_path(path, ROOT_INO, &inode) == -1) {
+		printf("invalid file %s\n", path);
 		return -1;
+	}
+
+	if (size > BLOCK_SIZE * 16) {
+		printf("write too large\n");
+		return -1;
+	}
 	
 	int start_block = offset / BLOCK_SIZE;
 	int start_byte = offset % BLOCK_SIZE;
@@ -575,8 +586,10 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 
 
 	if (inode.direct_ptr[start_block] == -1) {
-		if (alloc_d_blk(&inode, start_block) == -1)
+		if (alloc_d_blk(&inode, start_block) == -1) {
+			printf("start block allocation failed\n");
 			return -1;
+		}
 	}
 	
 	char block[BLOCK_SIZE];
@@ -589,8 +602,10 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 	//middle blocks
 	for (int i=start_block+1; i < end_block; i++) {
 		if (inode.direct_ptr[i] == -1) {
-			if (alloc_d_blk(&inode, i) == -1)
+			if (alloc_d_blk(&inode, i) == -1) {
+				printf("%d-th block allocation failed\n", i);
 				return -1;
+			}
 		}
 		memcpy(block, buffer, BLOCK_SIZE);
 		bio_write(inode.direct_ptr[i], buffer);
@@ -599,8 +614,10 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 	// last block
 	if (end_byte > 0) {
 		if (inode.direct_ptr[end_block] == -1) {
-			if (alloc_d_blk(&inode, end_block) == -1)
+			if (alloc_d_blk(&inode, end_block) == -1) {
+				printf("end block allocation failed\n");
 				return -1;
+			}
 		}
 		bio_read(inode.direct_ptr[end_block], block);
 		memcpy(block, buffer, end_byte);
