@@ -322,7 +322,6 @@ int tfs_mkfs() {
  * FUSE file operations
  */
 static void *tfs_init(struct fuse_conn_info *conn) {
-	printf("tfs init\n");
 	if (access(diskfile_path, F_OK) == 0) {
 		dev_open(diskfile_path);
 		char block[BLOCK_SIZE];
@@ -332,7 +331,6 @@ static void *tfs_init(struct fuse_conn_info *conn) {
 	else {
 		tfs_mkfs();
 	}
-
 	return NULL;
 }
 
@@ -343,7 +341,6 @@ static void tfs_destroy(void *userdata) {
 static int tfs_getattr(const char *path, struct stat *stbuf) {
 	inode_t inode;
 	if (get_node_by_path(path, ROOT_INO, &inode) == -1) {
-		printf("get attr error\n");
 		return -ENOENT;
 	}
 
@@ -383,7 +380,6 @@ static int tfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 		dirent_t *dirent_blk = (dirent_t*)block;
 		for (int j=0; j < BLOCK_SIZE/sizeof(dirent_t); j++) {
 			if (dirent_blk[j].valid == 1) {
-				printf("%s\n", dirent_blk[j].name);
 				filler(buffer, dirent_blk[j].name, NULL, 0);
 			}
 		}
@@ -417,17 +413,6 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 	dir_add(&p_inode, t_inode.ino, target, strlen(target));
 	writei(p_inode.ino, &p_inode);
 
-	// Step 1: Use dirname() and basename() to separate parent directory path and target directory name
-
-	// Step 2: Call get_node_by_path() to get inode of parent directory
-
-	// Step 3: Call get_avail_ino() to get an available inode number
-
-	// Step 4: Call dir_add() to add directory entry of target directory to parent directory
-
-	// Step 5: Update inode for target directory
-
-	// Step 6: Call writei() to write inode to disk
 	return 0;
 }
 
@@ -448,18 +433,6 @@ static int tfs_rmdir(const char *path) {
 
 	get_node_by_path(parent, ROOT_INO, &inode);
 	dir_remove(&inode, target, strlen(target));
-
-	// Step 1: Use dirname() and basename() to separate parent directory path and target directory name
-
-	// Step 2: Call get_node_by_path() to get inode of target directory
-
-	// Step 3: Clear data block bitmap of target directory
-
-	// Step 4: Clear inode bitmap and its data block
-
-	// Step 5: Call get_node_by_path() to get inode of parent directory
-
-	// Step 6: Call dir_remove() to remove directory entry of target directory in its parent directory
 
 	printf("%s\n", path);
 	return 0;
@@ -531,10 +504,12 @@ static int tfs_read(const char *path, char *buffer, size_t size, off_t offset, s
 	char block[BLOCK_SIZE];
 	bio_read(inode.direct_ptr[start_block], block);
 	//one block
-	memcpy(buffer, block + start_byte, BLOCK_SIZE - start_byte);
-	if (BLOCK_SIZE - start_byte <= size)
+	if (size <= BLOCK_SIZE - start_byte) {
+		memcpy(buffer, block + start_byte, size);
 		return size;
-
+	}
+	
+	memcpy(buffer, block + start_byte, BLOCK_SIZE - start_byte);
 	buffer +=  BLOCK_SIZE - start_byte;
 	//middle blocks
 	for (int i=start_block+1; i < end_block; i++) {
@@ -543,7 +518,7 @@ static int tfs_read(const char *path, char *buffer, size_t size, off_t offset, s
 		buffer += BLOCK_SIZE;
 	}
 	// last block
-	if (end_byte > 0) {
+	if (end_byte > 0 && end_block > start_block) {
 		bio_read(inode.direct_ptr[end_block], block);
 		memcpy(buffer, block, end_byte);
 	}
@@ -594,10 +569,12 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 	
 	char block[BLOCK_SIZE];
 	bio_read(inode.direct_ptr[start_block], block);
-	memcpy(block + start_byte, buffer, BLOCK_SIZE - start_byte);
-	if (BLOCK_SIZE - start_byte <= size)
+	if (size <= BLOCK_SIZE - start_byte) {
+		memcpy(block + start_byte, buffer, size);
+		bio_write(inode.direct_ptr[start_block], block);
 		return size;
-
+	}
+	memcpy(block + start_byte, buffer, BLOCK_SIZE - start_byte);
 	buffer +=  BLOCK_SIZE - start_byte;
 	//middle blocks
 	for (int i=start_block+1; i < end_block; i++) {
@@ -612,7 +589,7 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 		buffer += BLOCK_SIZE;
 	}
 	// last block
-	if (end_byte > 0) {
+	if (end_byte > 0 && end_block > start_block) {
 		if (inode.direct_ptr[end_block] == -1) {
 			if (alloc_d_blk(&inode, end_block) == -1) {
 				printf("end block allocation failed\n");
@@ -678,20 +655,27 @@ static struct fuse_operations tfs_ope = {
 
 
 int main(int argc, char **argv) {
-	// strcpy(diskfile_path, "./DISKFILE");
-	// tfs_mkfs();
-	// tfs_mkdir("/a", 0755);
-	// struct stat s;
-	// tfs_getattr("/a", &s);
-	// return 0;
+	strcpy(diskfile_path, "./DISKFILE");
+	tfs_mkfs();
+	tfs_create("/a", 0755, NULL);
 
-	int fuse_stat;
+	char buf[100];
+	for (int i=0; i < 100; i++) {
+		buf[i] = i;
+	}
+	tfs_write("/a", buf, 100, 0, NULL);
+	
+	char buf2[100];
+	tfs_read("/a", buf2, 100, 0, NULL);
+	for (int i=0; i < 100; i++) {
+		printf("%d\n", buf2[i]);
+	}
+	return 0;
 
-	getcwd(diskfile_path, PATH_MAX);
-	strcat(diskfile_path, "/DISKFILE");
-
-	fuse_stat = fuse_main(argc, argv, &tfs_ope, NULL);
-
-	return fuse_stat;
+	// int fuse_stat;
+	// getcwd(diskfile_path, PATH_MAX);
+	// strcat(diskfile_path, "/DISKFILE");
+	// fuse_stat = fuse_main(argc, argv, &tfs_ope, NULL);
+	// return fuse_stat;
 }
 
