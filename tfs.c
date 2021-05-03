@@ -32,29 +32,21 @@ char diskfile_path[PATH_MAX];
 // Declare your in-memory data structures here
 static superblock_t superblock;
 
-void clear_bmap_ino(int i) {
-	char block[BLOCK_SIZE];
-	bio_read(superblock.i_bitmap_blk, block);
-	unset_bitmap(block, i);
-	bio_write(superblock.i_bitmap_blk, block);
-}
 
-void clear_bmap_blkno(int i) {
-	char block[BLOCK_SIZE];
-	bio_read(superblock.d_bitmap_blk, block);
-	unset_bitmap(block, i);
-	bio_write(superblock.d_bitmap_blk, block);
-}
+/************** Bitmap Functions **************/
 
-/* 
- * Get available inode number from bitmap
- */
 int get_avail_ino() {
+	/* Read bitmap from disk into stack */
 	char block[BLOCK_SIZE];
 	bio_read(superblock.i_bitmap_blk, block);
+	
+	/* Loop through each byte in bitmap*/
 	for (int i=0; i < MAX_INUM/8; i++) {
+		/* Check if all bits are set to save comparisons */
 		if (block[i] == ~0)
 			continue;
+
+		/* Loop through by bit */
 		for (int j=0; j < 8; j++) {
 			int index = i*8+j;
 			if (get_bitmap(block, index) == 0) {
@@ -64,12 +56,9 @@ int get_avail_ino() {
 			}
 		}
 	}
-	return -1;
+	return -1;  /* No free bit found */
 }
 
-/* 
- * Get available data block number from bitmap
- */
 int get_avail_blkno() {
 	char block[BLOCK_SIZE];
 	bio_read(superblock.d_bitmap_blk, block);
@@ -88,9 +77,34 @@ int get_avail_blkno() {
 	return -1;
 }
 
-/* 
- * inode operations
- */
+void clear_bmap_ino(int i) {
+	char block[BLOCK_SIZE];
+	bio_read(superblock.i_bitmap_blk, block);
+	unset_bitmap(block, i);
+	bio_write(superblock.i_bitmap_blk, block);
+}
+
+void clear_bmap_blkno(int i) {
+	char block[BLOCK_SIZE];
+	bio_read(superblock.d_bitmap_blk, block);
+	unset_bitmap(block, i);
+	bio_write(superblock.d_bitmap_blk, block);
+}
+
+
+/************** INode Functions **************/
+
+void inode_init(inode_t *inode, uint16_t ino, uint32_t type) {
+	inode->ino = ino;
+	inode->type = type;
+	inode->valid = 1;
+	inode->size = 0;
+	inode->link = 0;
+	for (int i=0; i < 16; i++) {
+		inode->direct_ptr[i] = -1;
+	}
+}
+
 int readi(uint16_t ino, inode_t *inode) {
 	int block_num = superblock.i_start_blk + ino / (BLOCK_SIZE/sizeof(inode_t));
 	size_t offset = sizeof(inode_t) * (ino % (BLOCK_SIZE/sizeof(inode_t)));
@@ -98,6 +112,7 @@ int readi(uint16_t ino, inode_t *inode) {
 	char block[BLOCK_SIZE];
 	bio_read(block_num, block);
 	memcpy(inode, block+offset, sizeof(inode_t));
+
 	return 0;
 }
 
@@ -109,13 +124,14 @@ int writei(uint16_t ino, inode_t *inode) {
 	bio_read(block_num, block);
 	memcpy(block+offset, inode, sizeof(inode_t));
 	bio_write(block_num, block);
+
 	return 0;
 }
 
 
-/* 
- * directory operations
- */
+
+/************** Directory Operations **************/
+
 void dirent_init(dirent_t *dirent, uint16_t ino, const char *name) {
 	dirent->valid = 1;
 	dirent->ino = ino;
@@ -127,10 +143,12 @@ void dirent_init(dirent_t *dirent, uint16_t ino, const char *name) {
 int dir_find(uint16_t ino, const char *fname, size_t name_len, dirent_t *dirent) {
 	inode_t inode;
 	readi(ino, &inode);
+
+	char block[BLOCK_SIZE];
 	for (int i=0; i < 16; i++) {
 		if (inode.direct_ptr[i] == -1)
 			continue;
-		char block[BLOCK_SIZE];
+		
 		bio_read(inode.direct_ptr[i], block);
 		dirent_t *dirent_blk = (dirent_t*)block;
 		for (int j=0; j < BLOCK_SIZE/sizeof(dirent_t); j++) {
@@ -146,54 +164,53 @@ int dir_find(uint16_t ino, const char *fname, size_t name_len, dirent_t *dirent)
 }
 
 int dir_add(inode_t *dir_inode, uint16_t f_ino, const char *fname, size_t name_len) {
+	/* First make sure dirent doesnt exist in directory */
 	dirent_t dirent;
 	if (dir_find(dir_inode->ino, fname, name_len, &dirent) == 0)
 		return -1;
+
 	char block[BLOCK_SIZE];
-	int i, j;
-	bool run = true;
-	for (i=0; i < 16; i++) {
-		j = 0;
-		if (dir_inode->direct_ptr[i] == -1) {  // if no data block allocate one
-			dir_inode->direct_ptr[i] = get_avail_blkno();
+	for (int i=0; i < 16; i++) {
+		/* If dirent block not initialized, allocate new one */
+		if (dir_inode->direct_ptr[i] == -1) { 
+			int blkno = get_avail_blkno();
+			if (blkno == -1)
+				return -1;
+			dir_inode->direct_ptr[i] = blkno;
 			memset(block, 0, BLOCK_SIZE);
-			bio_write(dir_inode->direct_ptr[i], block);
-			break;
 		}
-		bio_read(dir_inode->direct_ptr[i], block);
-		for (; j < BLOCK_SIZE/sizeof(dirent_t); j++) {
-			if (((dirent_t*)block)[j].valid == 0) {
-				run = false;
-				break;
+		/* Otherwise read dirent block from disk */
+		else {
+			bio_read(dir_inode->direct_ptr[i], block);
+		}
+
+		/* Loop through dirent in block */
+		for (int j=0; j < BLOCK_SIZE/sizeof(dirent_t); j++) {
+			dirent_t *dirent = (dirent_t*)block+j;
+			/* dirent is not valid, free to use */
+			if (dirent->valid == 0) {  
+				dirent_init(dirent, f_ino, fname);
+				bio_write(dir_inode->direct_ptr[i], block);  // persist changes to block
+				dir_inode->link++;
+				return 0;
 			}
 		}
-		if (run == false)
-			break;
 	}
-	if (i < 16) {
-		dirent_t *dirent = (dirent_t*)block+j;
-		dirent_init(dirent, f_ino, fname);
-		bio_write(dir_inode->direct_ptr[i], block);
-		dir_inode->link++;
-		return 0;
-	}
-	else {  // no space in blocks
-		return -1;
-	}
+	return -1;
 }
 
 int dir_remove(inode_t *dir_inode, const char *fname, size_t name_len) {
 	char block[BLOCK_SIZE];
 	for (int i=0; i < 16; i++) {
-		// if no data block allocate one
 		if (dir_inode->direct_ptr[i] == -1)
 			continue;
+
 		bio_read(dir_inode->direct_ptr[i], block);
-		dirent_t *dirent_blk = (dirent_t*)block;
 		for (int j=0; j < BLOCK_SIZE/sizeof(dirent_t); j++) {
-			if (dirent_blk[j].valid == 1) {
-				if (dirent_blk[j].name_len == name_len && strncmp(dirent_blk[j].name, fname, name_len) == 0) {
-					dirent_blk[j].valid = 0;
+			dirent_t *dirent = (dirent_t*)block+j;
+			if (dirent->valid == 1) {
+				if (dirent->name_len == name_len && strncmp(dirent->name, fname, name_len) == 0) {
+					dirent->valid = 0;
 					bio_write(dir_inode->direct_ptr[i], block);
 					return 0;
 				}
@@ -207,69 +224,64 @@ int dir_remove(inode_t *dir_inode, const char *fname, size_t name_len) {
  * namei operation
  */
 int get_node_by_path(const char *path, uint16_t ino, inode_t *inode) {
+	/* Check if path is just root dir "/" */
 	if (strcmp(path, "/") == 0) {
 		readi(ROOT_INO, inode);
 		return 0;
 	}
 
+	/* Ignore first char if it is slash */
 	if (*path == '/')
 		path++;
 
+	/* Everything up to next '/' or '\0' is name of highest level dir/file */
 	char *ptr = strchr(path, '/');
-	int len = (ptr == NULL) ? strlen(path) : ptr-path;
+	int len = (ptr == NULL) ? strlen(path) : ptr-path;  // length of highest level name
 
 	dirent_t dirent;
 	if (dir_find(ino, path, len, &dirent) == 0) {
-		if (ptr == NULL) {  // end of path
+		if (ptr == NULL) {  // end of path, read into inode and return
 			readi(dirent.ino, inode);
 			return 0;
 		}
 		else {
-			return get_node_by_path(ptr, dirent.ino, inode);
+			return get_node_by_path(ptr, dirent.ino, inode);  // recurse
 		}
 	}
-	return -1;  // not found
+	return -1;  // dir/file not found
 }
 
-void inode_init(inode_t *inode, uint16_t ino, uint32_t type) {
-	inode->ino = ino;
-	inode->type = type;
 
-	inode->valid = 1;
-	inode->size = 0;
-	inode->link = 0;
-	for (int i=0; i < 16; i++) {
-		inode->direct_ptr[i] = -1;
-	}
-}
+/************** TFS Fuse Operations **************/
 
 /* 
  * Make file system
  */
 int tfs_mkfs() {
+	/* Initialize DISKFILE */
 	dev_init(diskfile_path);
 
+	/* Initialize superblock struct and info */
 	superblock.magic_num = MAGIC_NUM;
 	superblock.max_inum = MAX_INUM;
 	superblock.max_dnum = MAX_DNUM;
-
 	superblock.i_bitmap_blk = 1;
 	superblock.d_bitmap_blk = 2;
-
 	superblock.i_start_blk = superblock.d_bitmap_blk+1;
 	int inode_per_blk = BLOCK_SIZE / sizeof(inode_t);
 	superblock.d_start_blk = superblock.i_start_blk + (MAX_INUM+(inode_per_blk-1))/inode_per_blk;
 
+	/* Write superblock to disk */
 	char block[BLOCK_SIZE];
 	memcpy(block, &superblock, sizeof(superblock_t));
 	bio_write(0, block);
 
-	// clear bitmaps
+	/* Write bitmaps to disk */
 	memset(block, 0, BLOCK_SIZE);
 	bio_write(superblock.i_bitmap_blk, block);
 	bio_write(superblock.d_bitmap_blk, block);
 
-	// write root inode
+	/* Initialize '/' root inode and write to disk */
 	inode_t inode;
 	inode_init(&inode, get_avail_ino(), 0);
 	writei(inode.ino, &inode);
@@ -285,28 +297,33 @@ int tfs_mkfs() {
  */
 static void *tfs_init(struct fuse_conn_info *conn) {
 	if (access(diskfile_path, F_OK) == 0) {
+		/* Load DISKFILE and read superblock */
 		dev_open(diskfile_path);
 		char block[BLOCK_SIZE];
 		bio_read(0, block);
 		memcpy(&superblock, block, sizeof(superblock_t));
 	}
 	else {
+		/* Initialize DISKFILE, superblock will be initialized in tfs_mkfs() */
 		tfs_mkfs();
 	}
 	return NULL;
 }
 
 static void tfs_destroy(void *userdata) {
+	/* All in-memory structures are local vars, nothing to free() */
 	dev_close();
 }
 
 static int tfs_getattr(const char *path, struct stat *stbuf) {
+	/* Check dir/file at path exists */
 	inode_t inode;
 	if (get_node_by_path(path, ROOT_INO, &inode) == -1)
 		return -ENOENT;
 	
+	/* Fill stbuf with inode info */
 	memset(stbuf, 0, sizeof(*stbuf));
-	stbuf->st_ino = inode.ino;
+	stbuf->st_ino = inode.ino;  // not important
 	stbuf->st_mode = (inode.type == 0 ? S_IFDIR : S_IFREG) | 0755;
 	stbuf->st_nlink = inode.link;
 	stbuf->st_size = inode.size;
@@ -319,6 +336,7 @@ static int tfs_getattr(const char *path, struct stat *stbuf) {
 
 static int tfs_opendir(const char *path, struct fuse_file_info *fi) {
 	inode_t inode;
+	/* Check path exists and inode is DIR */
 	if (get_node_by_path(path, ROOT_INO, &inode) == 0 && inode.type == 0) {
 		return 0;
 	}
@@ -329,16 +347,21 @@ static int tfs_opendir(const char *path, struct fuse_file_info *fi) {
 
 static int tfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
 	inode_t inode;
-	get_node_by_path(path, ROOT_INO, &inode);
+	/* Path doesnt exist or inode is type FILE */
+	if (get_node_by_path(path, ROOT_INO, &inode) == -1 || inode.type == 1)
+		return -1
+
+	/* Loop through dirent blocks */
+	char block[BLOCK_SIZE];
 	for (int i=0; i < 16; i++) {
 		if (inode.direct_ptr[i] == -1)
 			continue;
-		char block[BLOCK_SIZE];
+	
 		bio_read(inode.direct_ptr[i], block);
-		dirent_t *dirent_blk = (dirent_t*)block;
 		for (int j=0; j < BLOCK_SIZE/sizeof(dirent_t); j++) {
-			if (dirent_blk[j].valid == 1) {
-				filler(buffer, dirent_blk[j].name, NULL, 0);
+			dirent_t *dirent = (dirent_t*)block+j;
+			if (dirent->valid == 1) {  // valid dir entry
+				filler(buffer, dirent->name, NULL, 0);
 			}
 		}
 	}
@@ -354,17 +377,18 @@ void parse_name(const char *path, char *parent, char *target) {
 }
 
 static int tfs_mkdir(const char *path, mode_t mode) {
-	char parent[200], target[50];
+	char parent[4096], target[208];
 	parse_name(path, parent, target);
 
 	inode_t p_inode, t_inode;
-	get_node_by_path(parent, ROOT_INO, &p_inode);
+	if (get_node_by_path(parent, ROOT_INO, &p_inode) == -1)
+		return -1;
 
 	int ino = get_avail_ino();
 	if (ino == -1)
 		return -1;
 
-	inode_init(&t_inode, get_avail_ino(), 0);
+	inode_init(&t_inode, ino, 0);
 	dir_add(&t_inode, t_inode.ino, ".", 1);
 	dir_add(&t_inode, p_inode.ino, "..", 2);
 	writei(t_inode.ino, &t_inode);
@@ -377,23 +401,25 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 
 
 static int tfs_rmdir(const char *path) {
-	inode_t inode;
-
-	char parent[200], target[50];
+	char parent[4096], target[208];
 	parse_name(path, parent, target);
 
-	if (get_node_by_path(path, ROOT_INO, &inode) == -1)
+	inode_t p_inode, t_inode;
+	if (get_node_by_path(path, ROOT_INO, &t_inode) == -1)
 		return -1;
+	get_node_by_path(parent, ROOT_INO, &p_inode);
 	
 	for (int i=0; i < 16; i++) {
-		clear_bmap_blkno(inode.direct_ptr[i]);
+		if (t_inode.direct_ptr[i] != -1) {
+			clear_bmap_blkno(t_inode.direct_ptr[i]);
+		}
 	}
-	clear_bmap_ino(inode.ino);
+	clear_bmap_ino(t_inode.ino);
 
-	get_node_by_path(parent, ROOT_INO, &inode);
-	dir_remove(&inode, target, strlen(target));
+	t_inode.valid = 0;
+	writei(t_inode.ino, &t_inode);
+	dir_remove(&p_inode, target, strlen(target));
 
-	printf("%s\n", path);
 	return 0;
 }
 
@@ -404,46 +430,52 @@ static int tfs_releasedir(const char *path, struct fuse_file_info *fi) {
 }
 
 static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
-	inode_t inode;
-	char parent[200], target[50];
+	char parent[4096], target[208];
 	parse_name(path, parent, target);
 
-	get_node_by_path(parent, ROOT_INO, &inode);
+	inode_t p_inode, t_inode;
+	if (get_node_by_path(parent, ROOT_INO, &p_inode) == -1)
+		return -1;
 
 	int ino = get_avail_ino();
 	if (ino == -1)
 		return -1;
-	
-	dir_add(&inode, ino, target, strlen(target));
-	writei(inode.ino, &inode);
 
-	inode_init(&inode, ino, 1);
-	writei(ino, &inode);
-	
+	inode_init(&t_inode, ino, 1);
+	writei(t_inode.ino, &t_inode);
+
+	dir_add(&p_inode, t_inode.ino, target, strlen(target));
+	writei(p_inode.ino, &p_inode);
+
 	return 0;
 }
 
 static int tfs_unlink(const char *path) {
-	inode_t inode;
-	char parent[200], target[50];
+	char parent[4096], target[208];
 	parse_name(path, parent, target);
 
-	if (get_node_by_path(path, ROOT_INO, &inode) == -1)
+	inode_t p_inode, t_inode;
+	if (get_node_by_path(path, ROOT_INO, &t_inode) == -1)
 		return -1;
+	get_node_by_path(parent, ROOT_INO, &p_inode);
 	
 	for (int i=0; i < 16; i++) {
-		clear_bmap_blkno(inode.direct_ptr[i]);
+		if (t_inode.direct_ptr[i] != -1) {
+			clear_bmap_blkno(t_inode.direct_ptr[i]);
+		}
 	}
-	clear_bmap_ino(inode.ino);
+	clear_bmap_ino(t_inode.ino);
 
-	get_node_by_path(parent, ROOT_INO, &inode);
-	dir_remove(&inode, target, strlen(target));
+	t_inode.valid = 0;
+	writei(t_inode.ino, &t_inode);
+	dir_remove(&p_inode, target, strlen(target));
 
 	return 0;
 }
 
 static int tfs_open(const char *path, struct fuse_file_info *fi) {
 	inode_t inode;
+	/* Check path exists and inode is FILE */
 	if (get_node_by_path(path, ROOT_INO, &inode) == 0 && inode.type == 1) {
 		return 0;
 	}
@@ -470,26 +502,28 @@ static int tfs_read(const char *path, char *buffer, size_t size, off_t offset, s
 	
 	char block[BLOCK_SIZE];
 	bio_read(inode.direct_ptr[start_block], block);
+
 	//one block
 	if (size <= BLOCK_SIZE - start_byte) {
 		memcpy(buffer, block + start_byte, size);
 		return size;
 	}
-	else {
-		memcpy(buffer, block + start_byte, BLOCK_SIZE - start_byte);
-		buffer +=  BLOCK_SIZE - start_byte;
-	}
+	memcpy(buffer, block + start_byte, BLOCK_SIZE - start_byte);
+	buffer +=  BLOCK_SIZE - start_byte;
+
 	//middle blocks
 	for (int i=start_block+1; i < end_block; i++) {
 		bio_read(inode.direct_ptr[i], block);
 		memcpy(buffer, block, BLOCK_SIZE);
 		buffer += BLOCK_SIZE;
 	}
+
 	// last block
 	if (end_byte > 0 && end_block > start_block) {
 		bio_read(inode.direct_ptr[end_block], block);
 		memcpy(buffer, block, end_byte);
 	}
+	
 	return size;
 }
 
