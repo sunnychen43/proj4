@@ -7,3 +7,5 @@ benchmark/
 .zip
 .DS_store
 .vscode/
+
+!Makefile

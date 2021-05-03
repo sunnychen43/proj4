@@ -295,7 +295,7 @@ int tfs_mkfs() {
 	superblock.d_bitmap_blk = 2;
 	superblock.i_start_blk = superblock.d_bitmap_blk+1;
 	int inode_per_blk = BLOCK_SIZE / sizeof(inode_t);
-	superblock.d_start_blk = superblock.i_start_blk + MAX_INUM/inode_per_blk;
+	superblock.d_start_blk = superblock.i_start_blk + (MAX_INUM+(inode_per_blk-1))/inode_per_blk;
 
 	char block[BLOCK_SIZE];
 	memcpy(block, &superblock, sizeof(superblock_t));
@@ -405,6 +405,11 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 	inode_t p_inode, t_inode;
 	get_node_by_path(parent, ROOT_INO, &p_inode);
 
+
+	int ino = get_avail_ino();
+	if (ino == -1)
+		return -1;
+
 	inode_init(&t_inode, get_avail_ino(), 0);
 	dir_add(&t_inode, t_inode.ino, ".", 1);
 	dir_add(&t_inode, p_inode.ino, "..", 2);
@@ -452,6 +457,9 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) 
 	get_node_by_path(parent, ROOT_INO, &inode);
 
 	int ino = get_avail_ino();
+	if (ino == -1)
+		return -1;
+	
 	dir_add(&inode, ino, target, strlen(target));
 	writei(inode.ino, &inode);
 
@@ -495,6 +503,11 @@ static int tfs_read(const char *path, char *buffer, size_t size, off_t offset, s
 	inode_t inode;
 	if (get_node_by_path(path, ROOT_INO, &inode) == -1)
 		return -1;
+
+	if (size+offset > BLOCK_SIZE * 16) {
+		printf("read too large\n");
+		return -1;
+	}
 	
 	int start_block = offset / BLOCK_SIZE;
 	int start_byte = offset % BLOCK_SIZE;
@@ -508,9 +521,10 @@ static int tfs_read(const char *path, char *buffer, size_t size, off_t offset, s
 		memcpy(buffer, block + start_byte, size);
 		return size;
 	}
-	
-	memcpy(buffer, block + start_byte, BLOCK_SIZE - start_byte);
-	buffer +=  BLOCK_SIZE - start_byte;
+	else {
+		memcpy(buffer, block + start_byte, BLOCK_SIZE - start_byte);
+		buffer +=  BLOCK_SIZE - start_byte;
+	}
 	//middle blocks
 	for (int i=start_block+1; i < end_block; i++) {
 		bio_read(inode.direct_ptr[i], block);
@@ -549,7 +563,7 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 		return -1;
 	}
 
-	if (size > BLOCK_SIZE * 16) {
+	if (size+offset > BLOCK_SIZE * 16) {
 		printf("write too large\n");
 		return -1;
 	}
@@ -574,8 +588,11 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 		bio_write(inode.direct_ptr[start_block], block);
 		return size;
 	}
-	memcpy(block + start_byte, buffer, BLOCK_SIZE - start_byte);
-	buffer +=  BLOCK_SIZE - start_byte;
+	else {
+		memcpy(block + start_byte, buffer, BLOCK_SIZE - start_byte);
+		bio_write(inode.direct_ptr[start_block], block);
+		buffer +=  BLOCK_SIZE - start_byte;
+	}
 	//middle blocks
 	for (int i=start_block+1; i < end_block; i++) {
 		if (inode.direct_ptr[i] == -1) {
@@ -654,28 +671,37 @@ static struct fuse_operations tfs_ope = {
 };
 
 
+// int main(int argc, char **argv) {
+	// strcpy(diskfile_path, "./DISKFILE");
+	// tfs_mkfs();
+	// tfs_create("/a", 0755, NULL);
+	// tfs_create("/b", 0755, NULL);
+	// tfs_create("/c", 0755, NULL);
+	// tfs_create("/d", 0755, NULL);
+	// tfs_create("/e", 0755, NULL);
+	// tfs_create("/f", 0755, NULL);
+	// tfs_create("/g", 0755, NULL);
+	// tfs_create("/h", 0755, NULL);
+
+	// char buf[100];
+	// for (int i=0; i < 100; i++) {
+	// 	buf[i] = i;
+	// }
+	// tfs_write("/a", buf, 100, 0, NULL);
+
+	// char buf2[100];
+	// tfs_read("/a", buf2, 100, 0, NULL);
+	// for (int i=0; i < 100; i++) {
+	// 	printf("%d\n", buf2[i]);
+	// }
+	// return 0;
+// }
+
 int main(int argc, char **argv) {
-	strcpy(diskfile_path, "./DISKFILE");
-	tfs_mkfs();
-	tfs_create("/a", 0755, NULL);
-
-	char buf[100];
-	for (int i=0; i < 100; i++) {
-		buf[i] = i;
-	}
-	tfs_write("/a", buf, 100, 0, NULL);
-	
-	char buf2[100];
-	tfs_read("/a", buf2, 100, 0, NULL);
-	for (int i=0; i < 100; i++) {
-		printf("%d\n", buf2[i]);
-	}
-	return 0;
-
-	// int fuse_stat;
-	// getcwd(diskfile_path, PATH_MAX);
-	// strcat(diskfile_path, "/DISKFILE");
-	// fuse_stat = fuse_main(argc, argv, &tfs_ope, NULL);
-	// return fuse_stat;
+	int fuse_stat;
+	getcwd(diskfile_path, PATH_MAX);
+	strcat(diskfile_path, "/DISKFILE");
+	fuse_stat = fuse_main(argc, argv, &tfs_ope, NULL);
+	return fuse_stat;
 }
 
