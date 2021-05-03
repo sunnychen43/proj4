@@ -32,27 +32,6 @@ char diskfile_path[PATH_MAX];
 // Declare your in-memory data structures here
 static superblock_t superblock;
 
-
-int readi(uint16_t ino, inode_t *inode);
-void print_dirent(uint16_t ino) {
-	inode_t inode;
-	readi(ino, &inode);
-	char block[BLOCK_SIZE];
-	for (int i=0; i < 16; i++) {
-		// if no data block allocate one
-		if (inode.direct_ptr[i] == -1)
-			continue;
-		bio_read(inode.direct_ptr[i], block);
-		dirent_t *dirent_blk = (dirent_t*)block;
-		for (int j=0; j < BLOCK_SIZE/sizeof(dirent_t); j++) {
-			if (dirent_blk[j].valid == 1) {
-				printf("%s\n", dirent_blk[j].name);
-			}
-		}
-	}
-}
-
-
 void clear_bmap_ino(int i) {
 	char block[BLOCK_SIZE];
 	bio_read(superblock.i_bitmap_blk, block);
@@ -71,10 +50,8 @@ void clear_bmap_blkno(int i) {
  * Get available inode number from bitmap
  */
 int get_avail_ino() {
-
 	char block[BLOCK_SIZE];
 	bio_read(superblock.i_bitmap_blk, block);
-
 	for (int i=0; i < MAX_INUM/8; i++) {
 		if (block[i] == ~0)
 			continue;
@@ -87,7 +64,6 @@ int get_avail_ino() {
 			}
 		}
 	}
-
 	return -1;
 }
 
@@ -95,10 +71,8 @@ int get_avail_ino() {
  * Get available data block number from bitmap
  */
 int get_avail_blkno() {
-
 	char block[BLOCK_SIZE];
 	bio_read(superblock.d_bitmap_blk, block);
-
 	for (int i=0; i < MAX_DNUM/8; i++) {
 		if (block[i] == ~0)
 			continue;
@@ -111,7 +85,6 @@ int get_avail_blkno() {
 			}
 		}
 	}
-
 	return -1;
 }
 
@@ -119,19 +92,16 @@ int get_avail_blkno() {
  * inode operations
  */
 int readi(uint16_t ino, inode_t *inode) {
-
 	int block_num = superblock.i_start_blk + ino / (BLOCK_SIZE/sizeof(inode_t));
 	size_t offset = sizeof(inode_t) * (ino % (BLOCK_SIZE/sizeof(inode_t)));
 
 	char block[BLOCK_SIZE];
 	bio_read(block_num, block);
 	memcpy(inode, block+offset, sizeof(inode_t));
-
 	return 0;
 }
 
 int writei(uint16_t ino, inode_t *inode) {
-
 	int block_num = superblock.i_start_blk + ino / (BLOCK_SIZE/sizeof(inode_t));
 	size_t offset = sizeof(inode_t) * (ino % (BLOCK_SIZE/sizeof(inode_t)));
 
@@ -139,7 +109,6 @@ int writei(uint16_t ino, inode_t *inode) {
 	bio_read(block_num, block);
 	memcpy(block+offset, inode, sizeof(inode_t));
 	bio_write(block_num, block);
-
 	return 0;
 }
 
@@ -173,7 +142,6 @@ int dir_find(uint16_t ino, const char *fname, size_t name_len, dirent_t *dirent)
 			}
 		}
 	}
-
 	return -1;
 }
 
@@ -181,7 +149,6 @@ int dir_add(inode_t *dir_inode, uint16_t f_ino, const char *fname, size_t name_l
 	dirent_t dirent;
 	if (dir_find(dir_inode->ino, fname, name_len, &dirent) == 0)
 		return -1;
-
 	char block[BLOCK_SIZE];
 	int i, j;
 	bool run = true;
@@ -193,7 +160,6 @@ int dir_add(inode_t *dir_inode, uint16_t f_ino, const char *fname, size_t name_l
 			bio_write(dir_inode->direct_ptr[i], block);
 			break;
 		}
-
 		bio_read(dir_inode->direct_ptr[i], block);
 		for (; j < BLOCK_SIZE/sizeof(dirent_t); j++) {
 			if (((dirent_t*)block)[j].valid == 0) {
@@ -204,7 +170,6 @@ int dir_add(inode_t *dir_inode, uint16_t f_ino, const char *fname, size_t name_l
 		if (run == false)
 			break;
 	}
-
 	if (i < 16) {
 		dirent_t *dirent = (dirent_t*)block+j;
 		dirent_init(dirent, f_ino, fname);
@@ -218,7 +183,6 @@ int dir_add(inode_t *dir_inode, uint16_t f_ino, const char *fname, size_t name_l
 }
 
 int dir_remove(inode_t *dir_inode, const char *fname, size_t name_len) {
-
 	char block[BLOCK_SIZE];
 	for (int i=0; i < 16; i++) {
 		// if no data block allocate one
@@ -236,7 +200,6 @@ int dir_remove(inode_t *dir_inode, const char *fname, size_t name_len) {
 			}
 		}
 	}
-
 	return -1;
 }
 
@@ -248,7 +211,7 @@ int get_node_by_path(const char *path, uint16_t ino, inode_t *inode) {
 		readi(ROOT_INO, inode);
 		return 0;
 	}
-	
+
 	if (*path == '/')
 		path++;
 
@@ -265,7 +228,6 @@ int get_node_by_path(const char *path, uint16_t ino, inode_t *inode) {
 			return get_node_by_path(ptr, dirent.ino, inode);
 		}
 	}
-
 	return -1;  // not found
 }
 
@@ -285,14 +247,15 @@ void inode_init(inode_t *inode, uint16_t ino, uint32_t type) {
  * Make file system
  */
 int tfs_mkfs() {
-
 	dev_init(diskfile_path);
 
 	superblock.magic_num = MAGIC_NUM;
 	superblock.max_inum = MAX_INUM;
 	superblock.max_dnum = MAX_DNUM;
+
 	superblock.i_bitmap_blk = 1;
 	superblock.d_bitmap_blk = 2;
+
 	superblock.i_start_blk = superblock.d_bitmap_blk+1;
 	int inode_per_blk = BLOCK_SIZE / sizeof(inode_t);
 	superblock.d_start_blk = superblock.i_start_blk + (MAX_INUM+(inode_per_blk-1))/inode_per_blk;
@@ -308,11 +271,10 @@ int tfs_mkfs() {
 
 	// write root inode
 	inode_t inode;
-	int ino = get_avail_ino();
-	inode_init(&inode, ino, 0);
-	writei(ino, &inode);
-	dir_add(&inode, ino, ".", 1);
-	writei(ino, &inode);
+	inode_init(&inode, get_avail_ino(), 0);
+	writei(inode.ino, &inode);
+	dir_add(&inode, inode.ino, ".", 1);
+	writei(inode.ino, &inode);
 
 	return 0;
 }
@@ -340,12 +302,10 @@ static void tfs_destroy(void *userdata) {
 
 static int tfs_getattr(const char *path, struct stat *stbuf) {
 	inode_t inode;
-	if (get_node_by_path(path, ROOT_INO, &inode) == -1) {
+	if (get_node_by_path(path, ROOT_INO, &inode) == -1)
 		return -ENOENT;
-	}
-
+	
 	memset(stbuf, 0, sizeof(*stbuf));
-
 	stbuf->st_ino = inode.ino;
 	stbuf->st_mode = (inode.type == 0 ? S_IFDIR : S_IFREG) | 0755;
 	stbuf->st_nlink = inode.link;
@@ -368,9 +328,7 @@ static int tfs_opendir(const char *path, struct fuse_file_info *fi) {
 }
 
 static int tfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
-
 	inode_t inode;
-
 	get_node_by_path(path, ROOT_INO, &inode);
 	for (int i=0; i < 16; i++) {
 		if (inode.direct_ptr[i] == -1)
@@ -384,27 +342,23 @@ static int tfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 			}
 		}
 	}
-
 	return 0;
 }
 
 
 void parse_name(const char *path, char *parent, char *target) {
 	strcpy(parent, path);
-
 	char *p = strrchr(path, '/');
 	parent[(p == path) ? 1 : p-path] = 0;
 	strcpy(target, p+1);
 }
 
 static int tfs_mkdir(const char *path, mode_t mode) {
-
 	char parent[200], target[50];
 	parse_name(path, parent, target);
 
 	inode_t p_inode, t_inode;
 	get_node_by_path(parent, ROOT_INO, &p_inode);
-
 
 	int ino = get_avail_ino();
 	if (ino == -1)
