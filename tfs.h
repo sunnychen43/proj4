@@ -14,7 +14,7 @@
 #define _TFS_H
 
 #define MAGIC_NUM 0x5C3A
-#define MAX_INUM 8
+#define MAX_INUM 1024
 #define MAX_DNUM 16384
 
 
