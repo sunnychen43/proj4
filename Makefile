@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=-g -Wall -D_FILE_OFFSET_BITS=64
+CFLAGS=-g -Wall -Wno-unused-value -D_FILE_OFFSET_BITS=64
 LDFLAGS=-lfuse
 
 OBJ=tfs.o block.o

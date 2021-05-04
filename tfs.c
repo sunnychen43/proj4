@@ -331,6 +331,7 @@ int get_node_by_path(const char *path, uint16_t ino, inode_t *inode) {
  * info, setup bitmaps, and initialize root directory inode "/".
  */
 int tfs_mkfs() {
+
 	/* simple spin lock for thread safety */
 	while (__sync_lock_test_and_set(&flag, 1) == 1) {
     }
