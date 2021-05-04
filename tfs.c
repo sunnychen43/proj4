@@ -477,7 +477,7 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 	if ((ino = get_avail_ino()) == -1) { 
 		return -ENOSPC;  /* no space for inode */
 	}
-	if ((retstat = dir_add(&p_inode, ino, target, strlen(target)))) < 0) {
+	if ((retstat = dir_add(&p_inode, ino, target, strlen(target))) < 0) {
 		clear_bmap_ino(ino);
 		return retstat;  /* dir_add() failed, probably no space for dirent */
 	}
@@ -564,7 +564,7 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) 
 	if ((ino = get_avail_ino()) == -1) { 
 		return -ENOSPC;
 	}
-	if ((retstat = dir_add(&p_inode, ino, target, strlen(target)))) < 0) {
+	if ((retstat = dir_add(&p_inode, ino, target, strlen(target))) < 0) {
 		clear_bmap_ino(ino);
 		return retstat;
 	}
