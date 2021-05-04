@@ -69,7 +69,7 @@ int get_avail_ino() {
 	/* Read bitmap from disk into stack */
 	char block[BLOCK_SIZE];
 	bio_read(superblock.i_bitmap_blk, block);
-	
+
 	/* Loop through each byte in bitmap*/
 	for (int i=0; i < MAX_INUM/8; i++) {
 		/* Check if all bits are set to save comparisons */
@@ -420,12 +420,45 @@ static int tfs_opendir(const char *path, struct fuse_file_info *fi) {
 	}
 }
 
+int a() {
+	char block[BLOCK_SIZE];
+	bio_read(superblock.i_bitmap_blk, block);
+	int res = 0;
+	for (int i=0; i < MAX_INUM/8; i++) {
+		for (int j=0; j < 8; j++) {
+			int index = i*8+j;
+			if (get_bitmap(block, index) == 1) {
+				res++;
+			}
+		}
+	}
+	return res;
+}
+
+int b() {
+	char block[BLOCK_SIZE];
+	bio_read(superblock.d_bitmap_blk, block);
+	int res = 0;
+	for (int i=0; i < MAX_DNUM/8; i++) {
+		for (int j=0; j < 8; j++) {
+			int index = i*8+j;
+			if (get_bitmap(block, index) == 1) {
+				res++;
+			}
+		}
+	}
+	return res;
+}
+
 /* 
  * Finds inode at path and passes all valid dirents into function filler.
  */
 static int tfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
-	inode_t inode;
+	
+	printf("%d %d\n", a(), b());
+
 	/* Path doesnt exist or inode is type FILE */
+	inode_t inode;
 	if (get_node_by_path(path, ROOT_INO, &inode) == -1 || inode.type == TYPE_FILE)
 		return -1;
 
