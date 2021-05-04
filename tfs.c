@@ -25,18 +25,45 @@
 
 #define MAX(x, y) (((x) > (y)) ? (x) : (y))
 #define MIN(x, y) (((x) < (y)) ? (x) : (y))
-#define ROOT_INO 0
-#define TYPE_DIR 0
-#define TYPE_FILE 1
 
-char diskfile_path[PATH_MAX];
+#define ROOT_INO 	0
+#define TYPE_DIR 	0
+#define TYPE_FILE 	1
 
-// Declare your in-memory data structures here
+
+/********** Local Function Definitions **********/
+
+int get_avail_ino();
+int get_avail_blkno();
+void clear_bmap_ino(int i);
+void clear_bmap_blkno(int i);
+
+void inode_init(inode_t *inode, uint16_t ino, uint32_t type);
+int readi(uint16_t ino, inode_t *inode);
+int writei(uint16_t ino, inode_t *inode);
+
+void dirent_init(dirent_t *dirent, uint16_t ino, const char *name, size_t name_len);
+int dir_find(uint16_t ino, const char *fname, size_t name_len, dirent_t *dirent_p);
+int dir_add(inode_t *dir_inode, uint16_t f_ino, const char *fname, size_t name_len);
+int dir_remove(inode_t *dir_inode, const char *fname, size_t name_len);
+int get_node_by_path(const char *path, uint16_t ino, inode_t *inode);
+
+void parse_name(const char *path, char *parent, char *target);
+int check_and_alloc(inode_t *inode, int i);
+
+
+/************** Static Variables **************/
+
 static superblock_t superblock;
+static char diskfile_path[PATH_MAX];
 
 
 /************** Bitmap Functions **************/
 
+/* 
+ * Find first available bit (bit = 0) in inode bitmap and returns
+ * its index. Returns -1 if no bits are available. 
+ */
 int get_avail_ino() {
 	/* Read bitmap from disk into stack */
 	char block[BLOCK_SIZE];
@@ -61,6 +88,9 @@ int get_avail_ino() {
 	return -1;  /* No free bit found */
 }
 
+/* 
+ * Same as get_avail_ino() but for data block bitmap.
+ */
 int get_avail_blkno() {
 	char block[BLOCK_SIZE];
 	bio_read(superblock.d_bitmap_blk, block);
@@ -79,6 +109,9 @@ int get_avail_blkno() {
 	return -1;
 }
 
+/* 
+ * Sets bit at i-th index in inode bitmap and stores changes in disk.
+ */
 void clear_bmap_ino(int i) {
 	char block[BLOCK_SIZE];
 	bio_read(superblock.i_bitmap_blk, block);
@@ -86,6 +119,9 @@ void clear_bmap_ino(int i) {
 	bio_write(superblock.i_bitmap_blk, block);
 }
 
+/* 
+ * Sets bit at i-th index in data block bitmap and stores changes in disk.
+ */
 void clear_bmap_blkno(int i) {
 	char block[BLOCK_SIZE];
 	bio_read(superblock.d_bitmap_blk, block);
@@ -93,8 +129,13 @@ void clear_bmap_blkno(int i) {
 	bio_write(superblock.d_bitmap_blk, block);
 }
 
+
 /************** INode Functions **************/
 
+/* 
+ * Stores default values for inode at *inode and invalidates all direct pointers.
+ * Note this function does not write to disk.
+ */
 void inode_init(inode_t *inode, uint16_t ino, uint32_t type) {
 	inode->ino = ino;
 	inode->type = type;
@@ -106,6 +147,10 @@ void inode_init(inode_t *inode, uint16_t ino, uint32_t type) {
 	}
 }
 
+/* 
+ * Reads inode from disk and stores data in *inode. Assuming ino is valid inode
+ * number.
+ */
 int readi(uint16_t ino, inode_t *inode) {
 	int block_num = superblock.i_start_blk + ino / (BLOCK_SIZE/sizeof(inode_t));
 	size_t offset = sizeof(inode_t) * (ino % (BLOCK_SIZE/sizeof(inode_t)));
@@ -117,6 +162,9 @@ int readi(uint16_t ino, inode_t *inode) {
 	return 0;
 }
 
+/* 
+ * Writes to disk from *inode. Assuming ino is valid inode number.
+ */
 int writei(uint16_t ino, inode_t *inode) {
 	int block_num = superblock.i_start_blk + ino / (BLOCK_SIZE/sizeof(inode_t));
 	size_t offset = sizeof(inode_t) * (ino % (BLOCK_SIZE/sizeof(inode_t)));
@@ -130,9 +178,12 @@ int writei(uint16_t ino, inode_t *inode) {
 }
 
 
-
 /************** Directory Operations **************/
 
+/* 
+ * Stores default values for dirent at *dirent. Note this function does not 
+ * write to disk.
+ */
 void dirent_init(dirent_t *dirent, uint16_t ino, const char *name, size_t name_len) {
 	dirent->valid = 1;
 	dirent->ino = ino;
@@ -140,7 +191,11 @@ void dirent_init(dirent_t *dirent, uint16_t ino, const char *name, size_t name_l
 	dirent->name_len = name_len;
 }
 
-// NAME IS NOT NULL TERMINATED
+/* 
+ * Load inode from disk and searches through directory entries to find one 
+ * that matches fname. On successful hit, copy dirent to *dirent_p and return
+ * 0. If cannot find, return -1. Assume that ino is valid and is dir.
+ */
 int dir_find(uint16_t ino, const char *fname, size_t name_len, dirent_t *dirent_p) {
 	inode_t inode;
 	readi(ino, &inode);
@@ -164,6 +219,12 @@ int dir_find(uint16_t ino, const char *fname, size_t name_len, dirent_t *dirent_
 	return -1;
 }
 
+/* 
+ * Attempts to add entry with ino f_ino and name fname into dir_inode. Checks
+ * if an entry already exists with the same name and then checks if there's enough
+ * space to add another entry. Return 0 on successful add and error code if 
+ * there is an error. Assume that dir_inode points to valid inode.
+ */
 int dir_add(inode_t *dir_inode, uint16_t f_ino, const char *fname, size_t name_len) {
 	/* Make sure dirent doesnt exist in directory */
 	dirent_t dirent;
@@ -199,6 +260,10 @@ int dir_add(inode_t *dir_inode, uint16_t f_ino, const char *fname, size_t name_l
 	return -ENOSPC;
 }
 
+/* 
+ * Attempts to remove entry with name fname from dir_inode. Returns 0 if entry is 
+ * found and removed and -1 otherwise.
+ */
 int dir_remove(inode_t *dir_inode, const char *fname, size_t name_len) {
 	char block[BLOCK_SIZE];
 	for (int i=0; i < 16; i++) {
@@ -221,7 +286,14 @@ int dir_remove(inode_t *dir_inode, const char *fname, size_t name_len) {
 }
 
 /* 
- * namei operation
+ * Recursively search for inode at given path. Inital calls to this function
+ * should use ino=ROOT_INO if path is given in terms of the root dir.
+ * 
+ * Sample Trace:
+ * path = "/dir/subdir/file" : find "dir" under "/"
+ * path = "/subdir/file" : find "subdir" under "dir"
+ * path = "/file" : find "file" under "subdir"
+ * Return inode corresponding to "file"
  */
 int get_node_by_path(const char *path, uint16_t ino, inode_t *inode) {
 	/* Check if path is just root dir "/" */
@@ -233,19 +305,18 @@ int get_node_by_path(const char *path, uint16_t ino, inode_t *inode) {
 	/* Ignore first char if it is slash */
 	if (*path == '/')
 		path++;
-
-	/* Everything up to next '/' or '\0' is name of highest level dir/file */
-	char *ptr = strchr(path, '/');
+	char *ptr = strchr(path, '/');  // everything before ptr is highest level name
 	int len = (ptr == NULL) ? strlen(path) : ptr-path;  // length of highest level name
 
 	dirent_t dirent;
 	if (dir_find(ino, path, len, &dirent) == 0) {
-		if (ptr == NULL) {  // end of path, read into inode and return
+		/* if end of path, read into inode and return */
+		if (ptr == NULL) {
 			readi(dirent.ino, inode);
 			return 0;
 		}
 		else {
-			return get_node_by_path(ptr, dirent.ino, inode);  // recurse
+			return get_node_by_path(ptr, dirent.ino, inode);
 		}
 	}
 	return -1;  // dir/file not found
@@ -255,7 +326,8 @@ int get_node_by_path(const char *path, uint16_t ino, inode_t *inode) {
 /************** TFS Fuse Operations **************/
 
 /* 
- * Make file system
+ * Initialize DISKFILE at diskfile_path, setup superblock structure and
+ * info, setup bitmaps, and initialize root directory inode "/".
  */
 int tfs_mkfs() {
 	/* Initialize DISKFILE */
@@ -291,10 +363,6 @@ int tfs_mkfs() {
 	return 0;
 }
 
-
-/* 
- * FUSE file operations
- */
 static void *tfs_init(struct fuse_conn_info *conn) {
 	if (access(diskfile_path, F_OK) == 0) {
 		/* Load DISKFILE and read superblock */
@@ -310,12 +378,10 @@ static void *tfs_init(struct fuse_conn_info *conn) {
 	return NULL;
 }
 
-
 static void tfs_destroy(void *userdata) {
 	/* All in-memory structures are local vars, nothing to free() */
 	dev_close();
 }
-
 
 static int tfs_getattr(const char *path, struct stat *stbuf) {
 	/* Check dir/file at path exists */
@@ -336,7 +402,6 @@ static int tfs_getattr(const char *path, struct stat *stbuf) {
 	return 0;
 }
 
-
 static int tfs_opendir(const char *path, struct fuse_file_info *fi) {
 	inode_t inode;
 	/* Check path exists and inode is DIR */
@@ -348,7 +413,9 @@ static int tfs_opendir(const char *path, struct fuse_file_info *fi) {
 	}
 }
 
-
+/* 
+ * Finds inode at path and passes all valid dirents into function filler.
+ */
 static int tfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
 	inode_t inode;
 	/* Path doesnt exist or inode is type FILE */
@@ -372,51 +439,58 @@ static int tfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 	return 0;
 }
 
-
+/* 
+ * Helper function for tfs calls. Splits path into parent and target components,
+ * where target is the name of the lowest file/dir and parent is the path of the
+ * target's parent. Assume parent and target
+ * 
+ * "/dir/subdir/subsub/file" --> parent = "/dir/subdir/subsub", target = "file"
+ */
 void parse_name(const char *path, char *parent, char *target) {
-	strcpy(parent, path);
+	strncpy(parent, path, 4095);
 	char *p = strrchr(path, '/');  // find last instance of '/'
 
 	/* if last '/' is first char, null terminate after it. otherwise replace it with '\0' */
-	parent[(p == path) ? 1 : p-path] = 0;  // 
-	strcpy(target, p+1);
+	parent[(p == path) ? 1 : p-path] = 0;
+	strncpy(target, p+1, 207);
 }
 
-
+/* 
+ * Tries to create directory at path. If fails for any reason will return 
+ * corresponding error code. Otherwise return 0.
+ */
 static int tfs_mkdir(const char *path, mode_t mode) {
 	/* split path into parent and target */
 	char parent[4096], target[208];
 	parse_name(path, parent, target);
 
+	/* error checking */
 	inode_t p_inode, t_inode;
 	if (get_node_by_path(parent, ROOT_INO, &p_inode) == -1) {
-		/* parent doesnt exist */
-		return -ENOENT;
+		return -ENOENT;  /* parent doesnt exist */
 	}
-	if (p_inode.type != TYPE_DIR) {
-		/* parent exists but isnt dir*/
-		return -ENOTDIR;
-	}
-		
-	int ino = get_avail_ino();
-	if (ino == -1) {
-		/* no space for inode */
-		return -ENOSPC;
+	if (p_inode.type != TYPE_DIR) { 
+		return -ENOTDIR;  /* parent exists but isnt dir*/
 	}
 
-	/* since were limited by number of dir entries, we check it first*/
-	int retstat = dir_add(&p_inode, ino, target, strlen(target));
-	if (retstat < 0) {
-		/* dir_add() failed, probably no space for dirent */
-		clear_bmap_ino(ino);
-		return retstat;
+	int ino, retstat;
+	if ((ino = get_avail_ino()) == -1) { 
+		return -ENOSPC;  /* no space for inode */
 	}
+	if ((retstat = dir_add(&p_inode, ino, target, strlen(target)))) < 0) {
+		clear_bmap_ino(ino);
+		return retstat;  /* dir_add() failed, probably no space for dirent */
+	}
+
+	/* write changes to parent */
 	p_inode.link++;
 	writei(p_inode.ino, &p_inode);
 
 	/* initialize and write new inode */
 	inode_init(&t_inode, ino, TYPE_DIR);
 	writei(t_inode.ino, &t_inode);  // THIS LINE IS IMPORTANT, must clear out inode
+
+	/* setup "." and ".." dirents */
 	dir_add(&t_inode, t_inode.ino, ".", 1);
 	dir_add(&t_inode, p_inode.ino, "..", 2);
 	writei(t_inode.ino, &t_inode);
@@ -424,7 +498,10 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 	return 0;
 }
 
-
+/* 
+ * Tries to remove directory at path. If fails for any reason will return 
+ * corresponding error code. Otherwise return 0.
+ */
 static int tfs_rmdir(const char *path) {
 	char parent[4096], target[208];
 	parse_name(path, parent, target);
@@ -450,13 +527,11 @@ static int tfs_rmdir(const char *path) {
 	return 0;
 }
 
-
 static int tfs_releasedir(const char *path, struct fuse_file_info *fi) {
 	// For this project, you don't need to fill this function
 	// But DO NOT DELETE IT!
     return 0;
 }
-
 
 static int tfs_open(const char *path, struct fuse_file_info *fi) {
 	inode_t inode;
@@ -469,7 +544,10 @@ static int tfs_open(const char *path, struct fuse_file_info *fi) {
 	}
 }
 
-
+/* 
+ * Tries to create file at path. Very similar to tfs_mkdir. If fails 
+ * for any reason will return corresponding error code. Otherwise return 0.
+ */
 static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
 	char parent[4096], target[208];
 	parse_name(path, parent, target);
@@ -478,20 +556,19 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) 
 	if (get_node_by_path(parent, ROOT_INO, &p_inode) == -1) {
 		return -ENOENT;
 	}
-	if (p_inode.type != TYPE_DIR) {
+	if (p_inode.type != TYPE_DIR) { 
 		return -ENOTDIR;
 	}
 
-	int ino = get_avail_ino();
-	if (ino == -1) {
+	int ino, retstat;
+	if ((ino = get_avail_ino()) == -1) { 
 		return -ENOSPC;
 	}
-
-	int retstat = dir_add(&p_inode, ino, target, strlen(target));
-	if (retstat < 0) {
+	if ((retstat = dir_add(&p_inode, ino, target, strlen(target)))) < 0) {
 		clear_bmap_ino(ino);
 		return retstat;
 	}
+
 	writei(p_inode.ino, &p_inode);
 
 	inode_init(&t_inode, ino, TYPE_FILE);
@@ -500,7 +577,10 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) 
 	return 0;
 }
 
-
+/* 
+ * Tries to remove file at path. Identical in function to tfs_rmdir. If fails 
+ * for any reason will return corresponding error code. Otherwise return 0.
+ */
 static int tfs_unlink(const char *path) {
 	char parent[4096], target[208];
 	parse_name(path, parent, target);
@@ -524,22 +604,31 @@ static int tfs_unlink(const char *path) {
 	return 0;
 }
 
-
+/* 
+ * Reads data from diskfile at path into buffer, given size and offsets. To
+ * minimize disk I/O calls, we try to memcpy() block by block whenever possible,
+ * and copy portions if the copied sections only cover part of blocks.
+*/
 static int tfs_read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fi) {
 	inode_t inode;
+	/* path doesnt exist */
 	if (get_node_by_path(path, ROOT_INO, &inode) == -1)
 		return -ENOENT;
 
+	/* path points to dir not file */
+	if (inode.type != TYPE_FILE)
+		return -EISDIR;
+
+	/* read too big */
 	if (size+offset > BLOCK_SIZE * 16)
-		/* read too big */
 		return -EFBIG;
-	
 
 	int start_block = offset / BLOCK_SIZE;
 	int start_byte = offset % BLOCK_SIZE;
 	int end_block = (offset + size) / BLOCK_SIZE;
 	int end_byte = (offset + size) % BLOCK_SIZE;
 	
+
 	char block[BLOCK_SIZE];
 	bio_read(inode.direct_ptr[start_block], block);
 
@@ -567,7 +656,11 @@ static int tfs_read(const char *path, char *buffer, size_t size, off_t offset, s
 	return size;
 }
 
-
+/* 
+ * Helper function for tfs_write(), checks if inode block at index i is valid.
+ * If not, try to allocate a new block and store it in inode. Returns 0 on
+ * success and -1 on failture.
+ */
 int check_and_alloc(inode_t *inode, int i) {
 	if (inode->direct_ptr[i] >= 0)
 		return 0;
@@ -582,26 +675,31 @@ int check_and_alloc(inode_t *inode, int i) {
 	bio_write(d_blk_num, block);
 
 	inode->direct_ptr[i] = d_blk_num;
-	inode->size += BLOCK_SIZE;
+	inode->size += BLOCK_SIZE;  // increment file size
 	writei(inode->ino, inode);
 
 	return 0;
 }
 
-
+/* 
+ * Functionally very similar to tfs_read() but in reverse, moving data from
+ * buffer to disk. Difference is we need to allocate data blocks for the file.
+ * Will overwrite data that was previously on disk.
+ */
 static int tfs_write(const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *fi) {
 	inode_t inode;
 	if (get_node_by_path(path, ROOT_INO, &inode) == -1)
 		return -ENOENT;
-
+	if (inode.type != TYPE_FILE)
+		return -EISDIR;
 	if (size+offset > BLOCK_SIZE * 16)
 		return -EFBIG;
 	
-
 	int start_block = offset / BLOCK_SIZE;
 	int start_byte = offset % BLOCK_SIZE;
 	int end_block = (offset + size) / BLOCK_SIZE;
 	int end_byte = (offset + size) % BLOCK_SIZE;
+
 
 	if (check_and_alloc(&inode, start_block) == -1)
 		return -ENOSPC;
@@ -638,8 +736,6 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 
 	return size;
 }
-
-
 
 static int tfs_truncate(const char *path, off_t size) {
 	// For this project, you don't need to fill this function
@@ -689,21 +785,6 @@ static struct fuse_operations tfs_ope = {
 	.release	= tfs_release
 };
 
-
-// int main(int argc, char **argv) {
-// 	strcpy(diskfile_path, "./DISKFILE");
-// 	tfs_mkfs();
-// 	tfs_mkdir("/a", 0755);
-// 	tfs_rmdir("/a");
-// 	tfs_mkdir("/a", 0755);
-
-// 	char path[300];
-// 	for (int i=0; i < 100; i++) {
-// 		sprintf(path, "/a/dir%d", i);
-// 		printf("%d %d\n", i, tfs_mkdir(path, 0755));
-// 	}
-// 	return 0;
-// }
 
 int main(int argc, char **argv) {
 	int fuse_stat;
