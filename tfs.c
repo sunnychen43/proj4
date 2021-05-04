@@ -561,7 +561,7 @@ static int tfs_rmdir(const char *path) {
 		if (t_inode.direct_ptr[i] != -1) {
 			char block[BLOCK_SIZE];
 			memset(block, 0, BLOCK_SIZE);
-			bio_write(t_inode.direct_ptr[i], BLOCK);
+			bio_write(t_inode.direct_ptr[i], block);
 			clear_bmap_blkno(t_inode.direct_ptr[i]);
 		}
 	}
@@ -647,7 +647,7 @@ static int tfs_unlink(const char *path) {
 		if (t_inode.direct_ptr[i] != -1) {
 			char block[BLOCK_SIZE];
 			memset(block, 0, BLOCK_SIZE);
-			bio_write(t_inode.direct_ptr[i], BLOCK);
+			bio_write(t_inode.direct_ptr[i], block);
 			clear_bmap_blkno(t_inode.direct_ptr[i]);
 		}
 	}
