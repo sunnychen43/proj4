@@ -126,7 +126,7 @@ void clear_bmap_ino(int i) {
 void clear_bmap_blkno(int i) {
 	char block[BLOCK_SIZE];
 	bio_read(superblock.d_bitmap_blk, block);
-	unset_bitmap(block, i);
+	unset_bitmap(block, i-superblock.d_start_blk);
 	bio_write(superblock.d_bitmap_blk, block);
 }
 
@@ -189,6 +189,7 @@ void dirent_init(dirent_t *dirent, uint16_t ino, const char *name, size_t name_l
 	dirent->valid = 1;
 	dirent->ino = ino;
 	strncpy(dirent->name, name, name_len);
+	dirent->name[name_len] = 0;
 	dirent->name_len = name_len;
 }
 
@@ -420,43 +421,10 @@ static int tfs_opendir(const char *path, struct fuse_file_info *fi) {
 	}
 }
 
-int a() {
-	char block[BLOCK_SIZE];
-	bio_read(superblock.i_bitmap_blk, block);
-	int res = 0;
-	for (int i=0; i < MAX_INUM/8; i++) {
-		for (int j=0; j < 8; j++) {
-			int index = i*8+j;
-			if (get_bitmap(block, index) == 1) {
-				res++;
-			}
-		}
-	}
-	return res;
-}
-
-int b() {
-	char block[BLOCK_SIZE];
-	bio_read(superblock.d_bitmap_blk, block);
-	int res = 0;
-	for (int i=0; i < MAX_DNUM/8; i++) {
-		for (int j=0; j < 8; j++) {
-			int index = i*8+j;
-			if (get_bitmap(block, index) == 1) {
-				res++;
-			}
-		}
-	}
-	return res;
-}
-
 /* 
  * Finds inode at path and passes all valid dirents into function filler.
  */
 static int tfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
-	
-	printf("%d %d\n", a(), b());
-
 	/* Path doesnt exist or inode is type FILE */
 	inode_t inode;
 	if (get_node_by_path(path, ROOT_INO, &inode) == -1 || inode.type == TYPE_FILE)
@@ -559,6 +527,7 @@ static int tfs_rmdir(const char *path) {
 	/* clear entries in bitmap */
 	for (int i=0; i < 16; i++) {
 		if (t_inode.direct_ptr[i] != -1) {
+			printf("%d\n", t_inode.direct_ptr[i]);
 			char block[BLOCK_SIZE];
 			memset(block, 0, BLOCK_SIZE);
 			bio_write(t_inode.direct_ptr[i], block);
