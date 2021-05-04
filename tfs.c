@@ -56,6 +56,7 @@ int check_and_alloc(inode_t *inode, int i);
 
 static superblock_t superblock;
 static char diskfile_path[PATH_MAX];
+static bool flag;
 
 
 /************** Bitmap Functions **************/
@@ -330,6 +331,10 @@ int get_node_by_path(const char *path, uint16_t ino, inode_t *inode) {
  * info, setup bitmaps, and initialize root directory inode "/".
  */
 int tfs_mkfs() {
+	/* simple spin lock for thread safety */
+	while (__sync_lock_test_and_set(&flag, 1) == 1) {
+    }
+
 	/* Initialize DISKFILE */
 	dev_init(diskfile_path);
 
@@ -360,6 +365,7 @@ int tfs_mkfs() {
 	dir_add(&inode, inode.ino, ".", 1);
 	writei(inode.ino, &inode);
 
+	__sync_lock_test_and_set(&flag, 0);
 	return 0;
 }
 
@@ -482,6 +488,8 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 		return retstat;  /* dir_add() failed, probably no space for dirent */
 	}
 
+	while (__sync_lock_test_and_set(&flag, 1) == 1) {
+    }
 	/* write changes to parent */
 	p_inode.link++;
 	writei(p_inode.ino, &p_inode);
@@ -495,6 +503,7 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 	dir_add(&t_inode, p_inode.ino, "..", 2);
 	writei(t_inode.ino, &t_inode);
 
+	__sync_lock_test_and_set(&flag, 0);
 	return 0;
 }
 
@@ -511,6 +520,8 @@ static int tfs_rmdir(const char *path) {
 		return -ENOENT;
 	get_node_by_path(parent, ROOT_INO, &p_inode);
 	
+	while (__sync_lock_test_and_set(&flag, 1) == 1) {
+    }
 	/* clear entries in bitmap */
 	for (int i=0; i < 16; i++) {
 		if (t_inode.direct_ptr[i] != -1) {
@@ -524,6 +535,7 @@ static int tfs_rmdir(const char *path) {
 	writei(t_inode.ino, &t_inode);
 	dir_remove(&p_inode, target, strlen(target));
 
+	__sync_lock_test_and_set(&flag, 0);
 	return 0;
 }
 
@@ -569,11 +581,13 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) 
 		return retstat;
 	}
 
+	while (__sync_lock_test_and_set(&flag, 1) == 1) {
+    }
 	writei(p_inode.ino, &p_inode);
-
 	inode_init(&t_inode, ino, TYPE_FILE);
 	writei(t_inode.ino, &t_inode);
 
+	__sync_lock_test_and_set(&flag, 0);
 	return 0;
 }
 
@@ -590,6 +604,8 @@ static int tfs_unlink(const char *path) {
 		return -ENOENT;
 	get_node_by_path(parent, ROOT_INO, &p_inode);
 	
+	while (__sync_lock_test_and_set(&flag, 1) == 1) {
+    }
 	for (int i=0; i < 16; i++) {
 		if (t_inode.direct_ptr[i] != -1) {
 			clear_bmap_blkno(t_inode.direct_ptr[i]);
@@ -601,6 +617,7 @@ static int tfs_unlink(const char *path) {
 	writei(t_inode.ino, &t_inode);
 	dir_remove(&p_inode, target, strlen(target));
 
+	__sync_lock_test_and_set(&flag, 0);
 	return 0;
 }
 
@@ -611,23 +628,20 @@ static int tfs_unlink(const char *path) {
 */
 static int tfs_read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fi) {
 	inode_t inode;
-	/* path doesnt exist */
 	if (get_node_by_path(path, ROOT_INO, &inode) == -1)
-		return -ENOENT;
-
-	/* path points to dir not file */
+		return -ENOENT;  /* path doesnt exist */
 	if (inode.type != TYPE_FILE)
-		return -EISDIR;
-
-	/* read too big */
+		return -EISDIR;  /* path points to dir not file */
 	if (size+offset > BLOCK_SIZE * 16)
-		return -EFBIG;
+		return -EFBIG;  /* read too big */
 
+
+	while (__sync_lock_test_and_set(&flag, 1) == 1) {
+    }
 	int start_block = offset / BLOCK_SIZE;
 	int start_byte = offset % BLOCK_SIZE;
 	int end_block = (offset + size) / BLOCK_SIZE;
-	int end_byte = (offset + size) % BLOCK_SIZE;
-	
+	int end_byte = (offset + size) % BLOCK_SIZE;	
 
 	char block[BLOCK_SIZE];
 	bio_read(inode.direct_ptr[start_block], block);
@@ -635,6 +649,7 @@ static int tfs_read(const char *path, char *buffer, size_t size, off_t offset, s
 	/* read first block */
 	if (size <= BLOCK_SIZE - start_byte) {
 		memcpy(buffer, block + start_byte, size);
+		__sync_lock_test_and_set(&flag, 0);
 		return size;
 	}
 	memcpy(buffer, block + start_byte, BLOCK_SIZE - start_byte);
@@ -652,7 +667,8 @@ static int tfs_read(const char *path, char *buffer, size_t size, off_t offset, s
 		bio_read(inode.direct_ptr[end_block], block);
 		memcpy(buffer, block, end_byte);
 	}
-	
+
+	__sync_lock_test_and_set(&flag, 0);
 	return size;
 }
 
@@ -695,11 +711,13 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 	if (size+offset > BLOCK_SIZE * 16)
 		return -EFBIG;
 	
+
+	while (__sync_lock_test_and_set(&flag, 1) == 1) {
+    }
 	int start_block = offset / BLOCK_SIZE;
 	int start_byte = offset % BLOCK_SIZE;
 	int end_block = (offset + size) / BLOCK_SIZE;
 	int end_byte = (offset + size) % BLOCK_SIZE;
-
 
 	if (check_and_alloc(&inode, start_block) == -1)
 		return -ENOSPC;
@@ -710,6 +728,7 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 	if (size <= BLOCK_SIZE - start_byte) {
 		memcpy(block + start_byte, buffer, size);
 		bio_write(inode.direct_ptr[start_block], block);
+		__sync_lock_test_and_set(&flag, 0);
 		return size;
 	}
 	memcpy(block + start_byte, buffer, BLOCK_SIZE - start_byte);
@@ -718,8 +737,10 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 
 	/* middle blocks */
 	for (int i=start_block+1; i < end_block; i++) {
-		if (check_and_alloc(&inode, i) == -1)
+		if (check_and_alloc(&inode, i) == -1) {
+			__sync_lock_test_and_set(&flag, 0);
 			return -ENOSPC;
+		}
 		memcpy(block, buffer, BLOCK_SIZE);
 		bio_write(inode.direct_ptr[i], buffer);
 		buffer += BLOCK_SIZE;
@@ -727,13 +748,16 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 
 	/* last block */
 	if (end_byte > 0 && end_block > start_block) {
-		if (check_and_alloc(&inode, end_block) == -1)
+		if (check_and_alloc(&inode, end_block) == -1) {
+			__sync_lock_test_and_set(&flag, 0);
 			return -ENOSPC;
+		}
 		bio_read(inode.direct_ptr[end_block], block);
 		memcpy(block, buffer, end_byte);
 		bio_write(inode.direct_ptr[end_block], block);
 	}
 
+	__sync_lock_test_and_set(&flag, 0);
 	return size;
 }
 
